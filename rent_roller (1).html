@@ -6,6 +6,8 @@
   <title>RentRoller Dashboard</title>
   <!-- Load the latest version of Plotly from CDN -->
   <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+  <!-- Load SheetJS (xlsx) library to parse Excel files -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <style>
     /*
       Apply a light icy blue background to the entire page.  This creates
@@ -71,7 +73,8 @@
 <body>
   <h1>RentRoller Dashboard</h1>
   <div id="upload-section">
-    <input type="file" id="file-input" accept=".json" />
+    <!-- Allow uploading JSON or Excel files -->
+    <input type="file" id="file-input" accept=".json,.xlsx,.xls" />
     <button id="upload-button">Generate Dashboard</button>
   </div>
   <div id="summary"></div>
@@ -103,27 +106,53 @@
     document.getElementById('upload-button').addEventListener('click', function() {
       const fileInput = document.getElementById('file-input');
       if (fileInput.files.length === 0) {
-        alert('Please select a JSON file to upload.');
+        alert('Please select a file to upload.');
         return;
       }
       const file = fileInput.files[0];
+      const fileName = file.name.toLowerCase();
       const reader = new FileReader();
-      reader.onload = function(e) {
-        let data;
-        try {
-          data = JSON.parse(e.target.result);
-        } catch (err) {
-          alert('The selected file does not contain valid JSON.');
-          return;
-        }
-        // Normalize data to an array of records
-        if (!Array.isArray(data)) {
-          // If the JSON object has enumerable values, use them as records
-          data = Object.values(data);
-        }
-        generateDashboard(data);
-      };
-      reader.readAsText(file);
+
+      // Determine how to read the file based on its extension
+      if (fileName.endsWith('.xlsx') || fileName.endsWith('.xls')) {
+        // Read Excel files as binary strings
+        reader.onload = function(e) {
+          try {
+            const data = e.target.result;
+            const workbook = XLSX.read(data, { type: 'binary' });
+            const firstSheetName = workbook.SheetNames[0];
+            const worksheet = workbook.Sheets[firstSheetName];
+            // Convert sheet to JSON; defval ensures empty cells are included as empty strings
+            let jsonRecords = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
+            // If the sheet is empty or not an array, alert the user
+            if (!Array.isArray(jsonRecords)) {
+              alert('The uploaded Excel file does not contain a valid table.');
+              return;
+            }
+            generateDashboard(jsonRecords);
+          } catch (err) {
+            console.error(err);
+            alert('Failed to parse the Excel file. Please ensure it is a valid .xlsx or .xls file.');
+          }
+        };
+        reader.readAsBinaryString(file);
+      } else {
+        // Assume JSON for all other extensions
+        reader.onload = function(e) {
+          let data;
+          try {
+            data = JSON.parse(e.target.result);
+          } catch (err) {
+            alert('The selected file is not valid JSON.');
+            return;
+          }
+          if (!Array.isArray(data)) {
+            data = Object.values(data);
+          }
+          generateDashboard(data);
+        };
+        reader.readAsText(file);
+      }
     });
 
     function generateDashboard(records) {
