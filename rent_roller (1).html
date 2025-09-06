@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RentRoller Dashboard</title>
+  <!-- Load the latest version of Plotly from CDN -->
+  <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+  <style>
+    /*
+      Apply a light icy blue background to the entire page.  This creates
+      the cool, wintry feel requested by the user.  The margin and
+      font settings remain as before.  
+    */
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+      background-color: #e6f4fa; /* icy blue background */
+    }
+    h1 {
+      text-align: center;
+    }
+    #upload-section {
+      margin-bottom: 20px;
+      text-align: center;
+    }
+    #upload-section input[type="file"] {
+      margin-right: 10px;
+    }
+    /*
+      The chart containers are given a fixed width of 40% and styled with
+      glass‑morphism.  The inline-block display allows multiple charts
+      to sit side‑by‑side on wider screens while wrapping on smaller
+      screens.  Padding adds internal spacing within each container.
+    */
+    .chart-container {
+      width: 40%;
+      min-width: 300px;
+      height: 400px;
+      margin: 20px;
+      display: inline-block;
+      vertical-align: top;
+      padding: 20px;
+      background: rgba(255, 255, 255, 0.25);
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      border-radius: 16px;
+      box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+    }
+    /*
+      The summary section also uses glass‑morphism styling to create
+      a cohesive look.  Margins and padding are tuned for readability.
+    */
+    #summary {
+      margin-top: 20px;
+      margin-bottom: 20px;
+      padding: 20px;
+      background: rgba(255, 255, 255, 0.25);
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      border-radius: 16px;
+      box-shadow: 0 4px 30px rgba(0,0,0,0.1);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+    }
+    #summary p {
+      margin: 5px 0;
+    }
+  </style>
+</head>
+<body>
+  <h1>RentRoller Dashboard</h1>
+  <div id="upload-section">
+    <input type="file" id="file-input" accept=".json" />
+    <button id="upload-button">Generate Dashboard</button>
+  </div>
+  <div id="summary"></div>
+  <div id="chart-occupancy" class="chart-container"></div>
+  <div id="chart-loss-to-lease" class="chart-container"></div>
+  <div id="chart-rent-sqft" class="chart-container"></div>
+  <div id="chart-balance-delinquency" class="chart-container"></div>
+  <div id="chart-lease-expiration" class="chart-container"></div>
+
+  <script>
+    // Function to parse a date from MM/DD/YYYY or similar formats
+    function parseDate(dateStr) {
+      if (!dateStr) return null;
+      // Remove whitespace and handle possible newline characters
+      const str = dateStr.toString().trim();
+      const parts = str.split('/');
+      if (parts.length === 3) {
+        const month = parseInt(parts[0], 10) - 1;
+        const day = parseInt(parts[1], 10);
+        const year = parseInt(parts[2], 10);
+        return new Date(year, month, day);
+      }
+      // Fallback to default Date parser
+      const d = new Date(str);
+      return isNaN(d.getTime()) ? null : d;
+    }
+
+    // Event listener for the upload button
+    document.getElementById('upload-button').addEventListener('click', function() {
+      const fileInput = document.getElementById('file-input');
+      if (fileInput.files.length === 0) {
+        alert('Please select a JSON file to upload.');
+        return;
+      }
+      const file = fileInput.files[0];
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        let data;
+        try {
+          data = JSON.parse(e.target.result);
+        } catch (err) {
+          alert('The selected file does not contain valid JSON.');
+          return;
+        }
+        // Normalize data to an array of records
+        if (!Array.isArray(data)) {
+          // If the JSON object has enumerable values, use them as records
+          data = Object.values(data);
+        }
+        generateDashboard(data);
+      };
+      reader.readAsText(file);
+    });
+
+    function generateDashboard(records) {
+      const totalUnits = records.length;
+      let occupiedCount = 0;
+      let totalLossToLease = 0;
+      let totalBalance = 0;
+      let delinquentCount = 0;
+      let totalLengthOfStay = 0;
+      let lengthCount = 0;
+      const rentPerSqftList = [];
+      const lossToLeaseList = [];
+      const expirationCounts = {};
+      const today = new Date();
+
+      records.forEach(rec => {
+        // Determine occupancy based on the status field
+        const status = rec['Unit/Lease Status'] || rec['Unit Lease Status'] || rec['Unit_Status'];
+        if (status && status.toString().toLowerCase().includes('occupied')) {
+          occupiedCount++;
+        }
+
+        // Parse numeric fields for rent calculations
+        const sqft = Number(rec['SQFT']) || 0;
+        const leaseRent = Number(rec['Lease Rent']) || Number(rec['RENT']) || 0;
+        const marketRent = Number(rec['Market + Addl.']) || 0;
+
+        // Rent per square foot
+        if (sqft > 0 && leaseRent > 0) {
+          rentPerSqftList.push({ unit: rec['Unit'], value: leaseRent / sqft });
+        }
+
+        // Loss to lease (market minus lease)
+        if (leaseRent > 0 && marketRent > 0) {
+          const lossVal = marketRent - leaseRent;
+          lossToLeaseList.push({ unit: rec['Unit'], value: lossVal });
+          totalLossToLease += lossVal;
+        }
+
+        // Balance and delinquency
+        const balance = Number(rec['Balance']) || 0;
+        totalBalance += balance;
+        if (balance > 0) {
+          delinquentCount++;
+        }
+
+        // Lease expiration timeline
+        const endDate = parseDate(rec['Lease End']);
+        if (endDate) {
+          const year = endDate.getFullYear();
+          const month = endDate.getMonth() + 1; // Months are 0-based
+          const label = `${year}-${month.toString().padStart(2, '0')}`;
+          expirationCounts[label] = (expirationCounts[label] || 0) + 1;
+        }
+
+        // Length of stay: difference between move-in and move-out (or today)
+        const moveIn = parseDate(rec['Move-In']);
+        const moveOut = parseDate(rec['Move-Out']);
+        if (moveIn) {
+          const end = moveOut || today;
+          const diffDays = (end - moveIn) / (1000 * 60 * 60 * 24);
+          if (!isNaN(diffDays)) {
+            totalLengthOfStay += diffDays;
+            lengthCount++;
+          }
+        }
+      });
+
+      // Derived metrics
+      const occupancyRate = totalUnits > 0 ? (occupiedCount / totalUnits) * 100 : 0;
+      const delinquencyRate = totalUnits > 0 ? (delinquentCount / totalUnits) * 100 : 0;
+      const avgRentPerSqft = rentPerSqftList.length > 0 ? rentPerSqftList.reduce((a,b) => a + b.value, 0) / rentPerSqftList.length : 0;
+      const avgLengthOfStayDays = lengthCount > 0 ? totalLengthOfStay / lengthCount : 0;
+      const avgLengthOfStayMonths = avgLengthOfStayDays / 30;
+
+      // Display summary
+      document.getElementById('summary').innerHTML = `
+        <h3>Portfolio Summary</h3>
+        <p><strong>Total Units:</strong> ${totalUnits}</p>
+        <p><strong>Occupancy Rate:</strong> ${occupancyRate.toFixed(2)}%</p>
+        <p><strong>Total Loss to Lease:</strong> $${totalLossToLease.toFixed(2)}</p>
+        <p><strong>Average Rent per Sqft:</strong> $${avgRentPerSqft.toFixed(2)}</p>
+        <p><strong>Total Balance:</strong> $${totalBalance.toFixed(2)}</p>
+        <p><strong>Delinquency Rate:</strong> ${delinquencyRate.toFixed(2)}%</p>
+        <p><strong>Average Length of Stay:</strong> ${avgLengthOfStayMonths.toFixed(1)} months</p>
+      `;
+
+      // Chart 1: Occupancy donut chart
+      const occData = [{
+        values: [occupiedCount, totalUnits - occupiedCount],
+        labels: ['Occupied','Vacant'],
+        type: 'pie',
+        hole: 0.5,
+        textinfo: 'label+percent'
+      }];
+      const occLayout = {
+        title: 'Occupancy Rate',
+        height: 400,
+        showlegend: true
+      };
+      Plotly.newPlot('chart-occupancy', occData, occLayout);
+
+      // Chart 2: Loss to lease by unit
+      const lossUnits = lossToLeaseList.map(item => item.unit);
+      const lossVals = lossToLeaseList.map(item => item.value);
+      const lossColors = lossVals.map(v => v >= 0 ? 'rgb(214,39,40)' : 'rgb(44,160,44)');
+      const lossData = [{
+        x: lossUnits,
+        y: lossVals,
+        type: 'bar',
+        marker: { color: lossColors },
+        text: lossVals.map(v => '$' + v.toFixed(2)),
+        textposition: 'auto'
+      }];
+      const lossLayout = {
+        title: 'Loss to Lease (Market - Lease Rent) by Unit',
+        xaxis: { title: 'Unit' },
+        yaxis: { title: 'Difference ($)' }
+      };
+      Plotly.newPlot('chart-loss-to-lease', lossData, lossLayout);
+
+      // Chart 3: Rent per square foot by unit
+      const rentUnits = rentPerSqftList.map(item => item.unit);
+      const rentVals = rentPerSqftList.map(item => item.value);
+      const rentData = [{
+        x: rentUnits,
+        y: rentVals,
+        type: 'bar',
+        marker: { color: 'rgb(31,119,180)' },
+        text: rentVals.map(v => '$' + v.toFixed(2) + '/sqft'),
+        textposition: 'auto'
+      }];
+      const rentLayout = {
+        title: 'Rent per Square Foot by Unit',
+        xaxis: { title: 'Unit' },
+        yaxis: { title: 'Rent per Sqft ($)' }
+      };
+      Plotly.newPlot('chart-rent-sqft', rentData, rentLayout);
+
+      // Chart 4: Balances by unit
+      const balanceUnits = records.map(rec => rec['Unit']);
+      const balanceVals = records.map(rec => Number(rec['Balance']) || 0);
+      const balColors = balanceVals.map(v => v >= 0 ? 'rgb(214,39,40)' : 'rgb(44,160,44)');
+      const balData = [{
+        x: balanceUnits,
+        y: balanceVals,
+        type: 'bar',
+        marker: { color: balColors },
+        text: balanceVals.map(v => '$' + v.toFixed(2)),
+        textposition: 'auto'
+      }];
+      const balLayout = {
+        title: 'Outstanding Balances by Unit',
+        xaxis: { title: 'Unit' },
+        yaxis: { title: 'Balance ($)' }
+      };
+      Plotly.newPlot('chart-balance-delinquency', balData, balLayout);
+
+      // Chart 5: Lease expirations by month
+      const expLabels = Object.keys(expirationCounts).sort();
+      const expVals = expLabels.map(k => expirationCounts[k]);
+      const expData = [{
+        x: expLabels,
+        y: expVals,
+        type: 'bar',
+        marker: { color: 'rgb(255,127,14)' }
+      }];
+      const expLayout = {
+        title: 'Lease Expirations by Month',
+        xaxis: { title: 'Month (YYYY-MM)' },
+        yaxis: { title: 'Number of Leases Expiring' }
+      };
+      Plotly.newPlot('chart-lease-expiration', expData, expLayout);
+    }
+  </script>
+</body>
+</html>
